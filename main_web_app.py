@@ -124,7 +124,7 @@ INDEX_TEMPLATE = '''
       {% endif %}
     {% endwith %}
     
-    <form method="POST" enctype="multipart/form-data">
+    <form method="POST" action="/" enctype="multipart/form-data">
         <input type="text" name="title" placeholder="Post a question or update..." required>
         <select name="category_id" required>
             <option value="">Select Category</option>
