@@ -16,21 +16,24 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Models (unchanged)
+# Models - Added Notification
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
-    bio = db.Column(db.String(500))  # New: User bio
+    bio = db.Column(db.String(500))
 
     def __repr__(self):
         return f'<User {self.username}>'
 
-    # Karma: Sum of scores from user's posts
     @property
     def karma(self):
         return sum(p.score for p in self.posts) if self.posts else 0
+
+    @property
+    def unread_notifications(self):
+        return db.session.query(Notification).filter_by(user_id=self.id, is_read=False).count()
 
 class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -68,12 +71,27 @@ class Vote(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
-    value = db.Column(db.Integer, nullable=False)  # +1 up, -1 down
+    value = db.Column(db.Integer, nullable=False)
 
     __table_args__ = (db.UniqueConstraint('user_id', 'post_id', name='unique_vote'),)
 
     def __repr__(self):
         return f'<Vote {self.value} by User {self.user_id} on Post {self.post_id}>'
+
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
+    comment_id = db.Column(db.Integer, db.ForeignKey('comment.id'), nullable=False)
+    message = db.Column(db.String(200), nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    is_read = db.Column(db.Boolean, default=False)
+    user = db.relationship('User', backref=db.backref('notifications', lazy=True))
+    post = db.relationship('Post', backref=db.backref('notifications', lazy=True))
+    comment = db.relationship('Comment')
+
+    def __repr__(self):
+        return f'<Notification {self.message} for User {self.user_id}>'
 
 # Flask-Login setup
 login_manager = LoginManager()
@@ -96,13 +114,13 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Global INDEX_TEMPLATE (added search form)
+# Global INDEX_TEMPLATE (added bell icon with unread count)
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Simple Q&A Web App with Search</title>
+    <title>Simple Q&A Web App with Notifications</title>
     <style>
         body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
         .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
@@ -129,11 +147,20 @@ INDEX_TEMPLATE = '''
         a.username { color: #1da1f2; text-decoration: none; }
         a.username:hover { text-decoration: underline; }
         .search-header { color: #666; font-style: italic; }
+        .bell { position: relative; cursor: pointer; margin-left: 10px; }
+        .bell-badge { position: absolute; top: -8px; right: -8px; background: #f44336; color: white; border-radius: 50%; padding: 2px 5px; font-size: 0.8em; }
     </style>
 </head>
 <body>
-    <h1>Simple Q&A Board with Upvotes & Categories</h1>
-    <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button></div>
+    <h1>Simple Q&A Board with Notifications</h1>
+    <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button>
+        <span class="bell" onclick="location.href='/notifications'" title="Notifications">
+            🔔
+            {% if current_user.unread_notifications > 0 %}
+            <span class="bell-badge">{{ current_user.unread_notifications }}</span>
+            {% endif %}
+        </span>
+    </div>
     {% with messages = get_flashed_messages() %}
       {% if messages %}
         {% for message in messages %}
@@ -236,82 +263,41 @@ INDEX_TEMPLATE = '''
 </html>
 '''
 
-# Profile Template (unchanged)
-PROFILE_TEMPLATE = '''
+# Notifications Template
+NOTIFICATIONS_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Profile - {{ user.username }}</title>
+    <title>Notifications</title>
     <style>
         body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
-        .bio { background: #f9f9f9; padding: 10px; border-radius: 4px; margin: 10px 0; }
-        .stats { background: #e7f3ff; padding: 10px; border-radius: 4px; }
-        .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
-        .vote-score { background: #4caf50; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 10px; }
-        .vote-btn { padding: 4px 8px; margin: 0 2px; border: none; border-radius: 4px; cursor: pointer; }
-        .up-btn { background: #4caf50; color: white; }
-        .down-btn { background: #f44336; color: white; }
-        .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
-        form { margin: 20px 0; }
-        input[type="text"], textarea, button { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
+        .notification { border: 1px solid #ccc; margin: 10px 0; padding: 10px; border-radius: 4px; }
+        .unread { background: #e7f3ff; }
+        .notification a { color: #1da1f2; text-decoration: none; }
+        .notification a:hover { text-decoration: underline; }
         .back-link { margin: 10px 0; }
     </style>
 </head>
 <body>
-    <h1>Profile: {{ user.username }}</h1>
+    <h1>Notifications</h1>
     <a href="/" class="back-link">← Back to Feed</a>
-    <div class="stats">
-        <strong>Karma: {{ user.karma }}</strong> | Posts: {{ user.posts|length }} | Joined: {{ user.id }}  <!-- ID as placeholder for join date -->
-    </div>
-    {% if user.bio %}
-    <div class="bio">{{ user.bio }}</div>
-    {% endif %}
-    {% if current_user.username == user.username %}
-    <form method="POST" action="/profile/{{ user.username }}/edit">
-        <textarea name="bio" placeholder="Update your bio..." rows="3">{{ user.bio or '' }}</textarea>
-        <button type="submit">Update Bio</button>
-    </form>
-    {% endif %}
     
-    <h2>Posts by {{ user.username }}</h2>
-    {% for post in posts %}
-    <div class="post" id="post-{{ post.id }}">
-        <h3>{{ post.title }} <small>in <span class="category">{{ post.category.name }}</span></small></h3>
-        <span class="vote-score" id="score-{{ post.id }}">{{ post.score }}</span>
-        <button type="button" class="vote-btn up-btn" onclick="vote(event, {{ post.id }}, 1)">↑</button>
-        <button type="button" class="vote-btn down-btn" onclick="vote(event, {{ post.id }}, -1)">↓</button>
-        <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
-        {% if post.image_path %}
-        <img src="{{ post.image_path }}" alt="Post image">
-        {% endif %}
-        {% for comment in post.comments %}
-        <div class="comment">{{ comment.text }} <small>by {{ comment.user.username }} - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
-        {% endfor %}
+    {% if notifications %}
+    {% for notif in notifications %}
+    <div class="notification {% if not notif.is_read %}unread{% endif %}">
+        <p>{{ notif.message }} <small><a href="/post/{{ notif.post_id }}">View Post</a></small></p>
+        <small>{{ notif.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
     </div>
     {% endfor %}
-    
-    <script>
-        function vote(event, postId, value) {
-            event.preventDefault();
-            event.stopPropagation();
-            const scoreEl = document.getElementById('score-' + postId);
-            fetch('/vote/' + postId, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({value: value})
-            }).then(response => response.json()).then(data => {
-                if (data.success) {
-                    scoreEl.textContent = data.score;
-                }
-            }).catch(err => console.error('Vote error:', err));
-        }
-    </script>
+    {% else %}
+    <p>No notifications yet. Be the first to comment!</p>
+    {% endif %}
 </body>
 </html>
 '''
 
-# Init DB and sample data (unchanged)
+# Init DB and sample data (added sample notifications)
 with app.app_context():
     db.create_all()
     
@@ -333,8 +319,9 @@ with app.app_context():
         db.session.commit()
     else:
         admin_user = db.session.query(User).filter_by(username='admin').first()
-        admin_user.bio = 'Admin user - building cool apps!'
-        db.session.commit()
+        if not admin_user.bio:
+            admin_user.bio = 'Admin user - building cool apps!'
+            db.session.commit()
     
     # Seed demo if not exists
     if not db.session.query(User).filter_by(username='demo').first():
@@ -343,8 +330,9 @@ with app.app_context():
         db.session.commit()
     else:
         demo_user = db.session.query(User).filter_by(username='demo').first()
-        demo_user.bio = 'Demo user - testing features!'
-        db.session.commit()
+        if not demo_user.bio:
+            demo_user.bio = 'Demo user - testing features!'
+            db.session.commit()
     
     # Seed sample posts if < 3
     if Post.query.count() < 3:
@@ -359,7 +347,7 @@ with app.app_context():
         db.session.add_all([post1, post2, post3])
         db.session.commit()
         
-        # Comments
+        # Comments (triggers notifications for post owners)
         comment1 = Comment(text="Start with freeCodeCamp—it's hands-on!", user_id=demo_user.id, post_id=post1.id)
         comment2 = Comment(text="Agreed! Add some Flask projects too.", user_id=admin_user.id, post_id=post1.id)
         comment3 = Comment(text="Something conversational like this app!", user_id=demo_user.id, post_id=post3.id)
@@ -375,9 +363,17 @@ with app.app_context():
         db.session.add(Vote(user_id=demo_user.id, post_id=post3.id, value=-1))
         db.session.commit()
     
+    # Seed sample notifications if none
+    if Notification.query.count() == 0:
+        # Notification for admin on comment1 (demo commented on post1)
+        db.session.add(Notification(user_id=post1.user_id, post_id=post1.id, comment_id=comment1.id, message=f"New comment by {demo_user.username} on your post '{post1.title}'"))
+        # Notification for demo on comment3 (self-comment, skipped) - but add one for admin on post3
+        db.session.add(Notification(user_id=post3.user_id, post_id=post3.id, comment_id=comment3.id, message=f"New comment by {demo_user.username} on your post '{post3.title}'"))
+        db.session.commit()
+    
     print("Seeding complete!")
 
-# Routes - Added search
+# Routes - Added notifications
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
@@ -402,6 +398,18 @@ def index():
     posts = Post.query.options(joinedload(Post.votes)).order_by(Post.timestamp.desc()).all()
     categories = Category.query.all()
     return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories, query=None, cat_id=None, cat_name=None)
+
+@app.route('/notifications')
+@login_required
+def notifications():
+    # Mark unread as read
+    unread = db.session.query(Notification).filter_by(user_id=current_user.id, is_read=False).all()
+    for notif in unread:
+        notif.is_read = True
+    db.session.commit()
+    
+    notifs = db.session.query(Notification).filter_by(user_id=current_user.id).order_by(Notification.timestamp.desc()).all()
+    return render_template_string(NOTIFICATIONS_TEMPLATE, notifications=notifs)
 
 @app.route('/search', methods=['GET'])
 @login_required
@@ -484,7 +492,27 @@ def vote_post(post_id):
     score = post.score
     return jsonify({'success': True, 'score': score})
 
-# Register, login, logout, comment, uploads (unchanged)
+@app.route('/comment/<int:post_id>', methods=['POST'])
+@login_required
+def add_comment(post_id):
+    comment_text = request.form.get('comment', '').strip()
+    post = db.session.get(Post, post_id)
+    if comment_text and post:
+        comment = Comment(text=comment_text, user_id=current_user.id, post_id=post.id)
+        db.session.add(comment)
+        db.session.flush()  # Flush to get comment.id
+        db.session.commit()
+        
+        # Create notification for post owner (if not self)
+        if current_user.id != post.user_id:
+            message = f"New comment by {current_user.username} on your post '{post.title}'"
+            notif = Notification(user_id=post.user_id, post_id=post.id, comment_id=comment.id, message=message)
+            db.session.add(notif)
+            db.session.commit()
+    
+    return index()
+
+# Register, login, logout, search, uploads (unchanged)
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -563,17 +591,6 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for('login'))
-
-@app.route('/comment/<int:post_id>', methods=['POST'])
-@login_required
-def add_comment(post_id):
-    comment_text = request.form.get('comment', '').strip()
-    post = db.session.get(Post, post_id)
-    if comment_text and post:
-        comment = Comment(text=comment_text, user_id=current_user.id, post_id=post.id)
-        db.session.add(comment)
-        db.session.commit()
-    return index()
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
