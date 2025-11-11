@@ -16,15 +16,21 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Models (unchanged except lazy='select' for votes)
+# Models - Added bio to User
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
+    bio = db.Column(db.String(500))  # New: User bio
 
     def __repr__(self):
         return f'<User {self.username}>'
+
+    # Karma: Sum of scores from user's posts
+    @property
+    def karma(self):
+        return sum(p.score for p in self.posts) if self.posts else 0
 
 class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -46,6 +52,10 @@ class Post(db.Model):
     comments = db.relationship('Comment', backref='post', lazy=True, cascade='all, delete-orphan')
     votes = db.relationship('Vote', backref='post', lazy='select', cascade='all, delete-orphan')
 
+    @property
+    def score(self):
+        return sum(v.value for v in self.votes) if self.votes else 0
+
 class Comment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.String(500), nullable=False)
@@ -64,9 +74,6 @@ class Vote(db.Model):
 
     def __repr__(self):
         return f'<Vote {self.value} by User {self.user_id} on Post {self.post_id}>'
-
-# Add property to Post for score calculation
-Post.score = property(lambda p: sum(v.value for v in p.votes) if p.votes else 0)
 
 # Flask-Login setup
 login_manager = LoginManager()
@@ -89,7 +96,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Global HTML template (JS now updates score in-place)
+# Global INDEX_TEMPLATE (unchanged)
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -115,6 +122,8 @@ INDEX_TEMPLATE = '''
         .logout { background: #dc3545; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
         .flash { color: red; }
         .cat-filter { margin: 10px 0; }
+        a.username { color: #1da1f2; text-decoration: none; }
+        a.username:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -150,7 +159,7 @@ INDEX_TEMPLATE = '''
     
     {% for post in posts %}
     <div class="post" id="post-{{ post.id }}">
-        <h3>{{ post.title }} <small>by {{ post.user.username }} in <span class="category">{{ post.category.name }}</span></small></h3>
+        <h3>{{ post.title }} <small>by <a href="/profile/{{ post.user.username }}" class="username">{{ post.user.username }}</a> in <span class="category">{{ post.category.name }}</span></small></h3>
         <span class="vote-score" id="score-{{ post.id }}">{{ post.score }}</span>
         <button type="button" class="vote-btn up-btn" onclick="vote(event, {{ post.id }}, 1)">↑</button>
         <button type="button" class="vote-btn down-btn" onclick="vote(event, {{ post.id }}, -1)">↓</button>
@@ -166,7 +175,7 @@ INDEX_TEMPLATE = '''
         </form>
         
         {% for comment in post.comments %}
-        <div class="comment">{{ comment.text }} <small>by {{ comment.user.username }} - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
+        <div class="comment">{{ comment.text }} <small>by <a href="/profile/{{ comment.user.username }}" class="username">{{ comment.user.username }}</a> - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
         {% endfor %}
     </div>
     {% endfor %}
@@ -174,7 +183,7 @@ INDEX_TEMPLATE = '''
     <script>
         function vote(event, postId, value) {
             event.preventDefault();
-            event.stopPropagation();  // Block bubble to forms
+            event.stopPropagation();
             const scoreEl = document.getElementById('score-' + postId);
             fetch('/vote/' + postId, {
                 method: 'POST',
@@ -182,7 +191,7 @@ INDEX_TEMPLATE = '''
                 body: JSON.stringify({value: value})
             }).then(response => response.json()).then(data => {
                 if (data.success) {
-                    scoreEl.textContent = data.score;  // Update score in-place
+                    scoreEl.textContent = data.score;
                 }
             }).catch(err => console.error('Vote error:', err));
         }
@@ -203,7 +212,82 @@ INDEX_TEMPLATE = '''
 </html>
 '''
 
-# Init DB and sample data (runs once) - Cleaned
+# Profile Template
+PROFILE_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Profile - {{ user.username }}</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .bio { background: #f9f9f9; padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .stats { background: #e7f3ff; padding: 10px; border-radius: 4px; }
+        .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
+        .vote-score { background: #4caf50; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 10px; }
+        .vote-btn { padding: 4px 8px; margin: 0 2px; border: none; border-radius: 4px; cursor: pointer; }
+        .up-btn { background: #4caf50; color: white; }
+        .down-btn { background: #f44336; color: white; }
+        .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
+        form { margin: 20px 0; }
+        input[type="text"], textarea, button { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
+        .back-link { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Profile: {{ user.username }}</h1>
+    <a href="/" class="back-link">← Back to Feed</a>
+    <div class="stats">
+        <strong>Karma: {{ user.karma }}</strong> | Posts: {{ user.posts|length }} | Joined: {{ user.id }}  <!-- ID as placeholder for join date -->
+    </div>
+    {% if user.bio %}
+    <div class="bio">{{ user.bio }}</div>
+    {% endif %}
+    {% if current_user.username == user.username %}
+    <form method="POST" action="/profile/{{ user.username }}/edit">
+        <textarea name="bio" placeholder="Update your bio..." rows="3">{{ user.bio or '' }}</textarea>
+        <button type="submit">Update Bio</button>
+    </form>
+    {% endif %}
+    
+    <h2>Posts by {{ user.username }}</h2>
+    {% for post in posts %}
+    <div class="post" id="post-{{ post.id }}">
+        <h3>{{ post.title }} <small>in <span class="category">{{ post.category.name }}</span></small></h3>
+        <span class="vote-score" id="score-{{ post.id }}">{{ post.score }}</span>
+        <button type="button" class="vote-btn up-btn" onclick="vote(event, {{ post.id }}, 1)">↑</button>
+        <button type="button" class="vote-btn down-btn" onclick="vote(event, {{ post.id }}, -1)">↓</button>
+        <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
+        {% if post.image_path %}
+        <img src="{{ post.image_path }}" alt="Post image">
+        {% endif %}
+        {% for comment in post.comments %}
+        <div class="comment">{{ comment.text }} <small>by {{ comment.user.username }} - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+    
+    <script>
+        function vote(event, postId, value) {
+            event.preventDefault();
+            event.stopPropagation();
+            const scoreEl = document.getElementById('score-' + postId);
+            fetch('/vote/' + postId, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({value: value})
+            }).then(response => response.json()).then(data => {
+                if (data.success) {
+                    scoreEl.textContent = data.score;
+                }
+            }).catch(err => console.error('Vote error:', err));
+        }
+    </script>
+</body>
+</html>
+'''
+
+# Init DB and sample data
 with app.app_context():
     db.create_all()
     
@@ -220,17 +304,23 @@ with app.app_context():
     
     # Seed admin if not exists
     if not db.session.query(User).filter_by(username='admin').first():
-        admin_user = User(username='admin', email='admin@example.com', password_hash=generate_password_hash('password'))
+        admin_user = User(username='admin', email='admin@example.com', password_hash=generate_password_hash('password'), bio='Admin user - building cool apps!')
         db.session.add(admin_user)
         db.session.commit()
-    admin_user = db.session.query(User).filter_by(username='admin').first()
+    else:
+        admin_user = db.session.query(User).filter_by(username='admin').first()
+        admin_user.bio = 'Admin user - building cool apps!'  # Update bio
+        db.session.commit()
     
     # Seed demo if not exists
     if not db.session.query(User).filter_by(username='demo').first():
-        demo_user = User(username='demo', email='demo@example.com', password_hash=generate_password_hash('demopass'))
+        demo_user = User(username='demo', email='demo@example.com', password_hash=generate_password_hash('demopass'), bio='Demo user - testing features!')
         db.session.add(demo_user)
         db.session.commit()
-    demo_user = db.session.query(User).filter_by(username='demo').first()
+    else:
+        demo_user = db.session.query(User).filter_by(username='demo').first()
+        demo_user.bio = 'Demo user - testing features!'
+        db.session.commit()
     
     # Seed sample posts if < 3
     if Post.query.count() < 3:
@@ -252,7 +342,7 @@ with app.app_context():
         db.session.add_all([comment1, comment2, comment3])
         db.session.commit()
     
-    # Seed sample votes - Commit posts first, then votes
+    # Seed sample votes
     if db.session.query(Vote).filter_by(post_id=1).count() == 0:
         post1 = db.session.get(Post, 1)
         post3 = db.session.get(Post, 3)
@@ -263,7 +353,7 @@ with app.app_context():
     
     print("Seeding complete!")
 
-# Routes (unchanged except vote jsonify & score refresh)
+# Routes
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
@@ -297,6 +387,30 @@ def category_filter(slug):
     categories = Category.query.all()
     return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
 
+@app.route('/profile/<username>')
+def profile(username):
+    user = db.session.query(User).filter_by(username=username).first_or_404()
+    posts = Post.query.options(joinedload(Post.votes), joinedload(Post.comments)).filter_by(user_id=user.id).order_by(Post.timestamp.desc()).all()
+    return render_template_string(PROFILE_TEMPLATE, user=user, posts=posts)
+
+@app.route('/profile/<username>/edit', methods=['POST'])
+@login_required
+def edit_profile(username):
+    if current_user.username != username:
+        flash('You can only edit your own profile!')
+        return redirect(url_for('profile', username=username))
+    
+    user = db.session.query(User).filter_by(username=username).first()
+    bio = request.form.get('bio', '').strip()
+    if len(bio) > 500:
+        flash('Bio too long (max 500 chars)!')
+        return redirect(url_for('profile', username=username))
+    
+    user.bio = bio
+    db.session.commit()
+    flash('Bio updated!')
+    return redirect(url_for('profile', username=username))
+
 @app.route('/vote/<int:post_id>', methods=['POST'])
 @login_required
 def vote_post(post_id):
@@ -320,7 +434,6 @@ def vote_post(post_id):
     
     db.session.commit()
     
-    # Refresh post with votes for accurate score
     post = db.session.get(Post, post.id, options=[joinedload(Post.votes)])
     score = post.score
     return jsonify({'success': True, 'score': score})
