@@ -16,7 +16,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Models - Added bio to User
+# Models (unchanged)
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -96,13 +96,13 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Global INDEX_TEMPLATE (unchanged)
+# Global INDEX_TEMPLATE (added search form)
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Simple Q&A Web App with Upvotes</title>
+    <title>Simple Q&A Web App with Search</title>
     <style>
         body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
         .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
@@ -116,6 +116,10 @@ INDEX_TEMPLATE = '''
         form { margin: 20px 0; }
         input[type="text"], input[type="email"], input[type="password"], textarea, button, select { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
         input[type="file"] { max-width: 400px; }
+        .search-form { display: flex; max-width: 400px; margin: 20px 0; }
+        .search-form input[type="text"] { flex: 1; margin-right: 10px; }
+        .search-form select { flex: 1; margin-right: 10px; }
+        .search-form button { flex: 1; }
         .share-btn { background: #1da1f2; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
         .share-btn:hover { background: #0d8bd9; }
         .user-info { float: right; color: #666; }
@@ -124,6 +128,7 @@ INDEX_TEMPLATE = '''
         .cat-filter { margin: 10px 0; }
         a.username { color: #1da1f2; text-decoration: none; }
         a.username:hover { text-decoration: underline; }
+        .search-header { color: #666; font-style: italic; }
     </style>
 </head>
 <body>
@@ -136,6 +141,17 @@ INDEX_TEMPLATE = '''
         {% endfor %}
       {% endif %}
     {% endwith %}
+    
+    <form method="GET" action="/search" class="search-form">
+        <input type="text" name="q" placeholder="Search titles..." value="{{ query or '' }}">
+        <select name="cat_id">
+            <option value="">All Categories</option>
+            {% for cat in categories %}
+            <option value="{{ cat.id }}" {% if cat_id == cat.id %}selected{% endif %}>{{ cat.name }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit">Search</button>
+    </form>
     
     <form method="POST" action="/" enctype="multipart/form-data">
         <input type="text" name="title" placeholder="Post a question or update..." required>
@@ -156,6 +172,10 @@ INDEX_TEMPLATE = '''
         {% endfor %}
         | <a href="/">All</a>
     </div>
+    
+    {% if query %}
+    <p class="search-header">Search Results for "{{ query }}" {% if cat_name %}in {{ cat_name }}{% endif %} ({{ posts|length }} results)</p>
+    {% endif %}
     
     {% for post in posts %}
     <div class="post" id="post-{{ post.id }}">
@@ -179,6 +199,10 @@ INDEX_TEMPLATE = '''
         {% endfor %}
     </div>
     {% endfor %}
+    
+    {% if query and posts|length == 0 %}
+    <p>No results found for "{{ query }}". Try a different search!</p>
+    {% endif %}
     
     <script>
         function vote(event, postId, value) {
@@ -212,7 +236,7 @@ INDEX_TEMPLATE = '''
 </html>
 '''
 
-# Profile Template
+# Profile Template (unchanged)
 PROFILE_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -287,7 +311,7 @@ PROFILE_TEMPLATE = '''
 </html>
 '''
 
-# Init DB and sample data
+# Init DB and sample data (unchanged)
 with app.app_context():
     db.create_all()
     
@@ -309,7 +333,7 @@ with app.app_context():
         db.session.commit()
     else:
         admin_user = db.session.query(User).filter_by(username='admin').first()
-        admin_user.bio = 'Admin user - building cool apps!'  # Update bio
+        admin_user.bio = 'Admin user - building cool apps!'
         db.session.commit()
     
     # Seed demo if not exists
@@ -353,7 +377,7 @@ with app.app_context():
     
     print("Seeding complete!")
 
-# Routes
+# Routes - Added search
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
@@ -377,7 +401,29 @@ def index():
     
     posts = Post.query.options(joinedload(Post.votes)).order_by(Post.timestamp.desc()).all()
     categories = Category.query.all()
-    return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
+    return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories, query=None, cat_id=None, cat_name=None)
+
+@app.route('/search', methods=['GET'])
+@login_required
+def search():
+    query = request.args.get('q', '').strip()
+    cat_id = request.args.get('cat_id', type=int)
+    cat_name = None
+    
+    posts = Post.query.options(joinedload(Post.votes))
+    
+    if query:
+        posts = posts.filter(Post.title.ilike(f'%{query}%'))
+    
+    if cat_id:
+        category = Category.query.get(cat_id)
+        if category:
+            cat_name = category.name
+            posts = posts.filter_by(category_id=cat_id)
+    
+    posts = posts.order_by(Post.timestamp.desc()).all()
+    categories = Category.query.all()
+    return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories, query=query, cat_id=cat_id, cat_name=cat_name)
 
 @app.route('/category/<slug>')
 @login_required
@@ -385,7 +431,7 @@ def category_filter(slug):
     category = Category.query.filter_by(slug=slug).first_or_404()
     posts = Post.query.options(joinedload(Post.votes)).filter_by(category_id=category.id).order_by(Post.timestamp.desc()).all()
     categories = Category.query.all()
-    return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
+    return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories, query=None, cat_id=category.id, cat_name=category.name)
 
 @app.route('/profile/<username>')
 def profile(username):
