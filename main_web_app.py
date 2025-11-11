@@ -28,7 +28,7 @@ class User(UserMixin, db.Model):
 class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), unique=True, nullable=False)
-    slug = db.Column(db.String(50), unique=True, nullable=False)  # For URL-friendly filters
+    slug = db.Column(db.String(50), unique=True, nullable=False)
 
     def __repr__(self):
         return f'<Category {self.name}>'
@@ -43,6 +43,7 @@ class Post(db.Model):
     user = db.relationship('User', backref=db.backref('posts', lazy=True))
     category = db.relationship('Category', backref=db.backref('posts', lazy=True))
     comments = db.relationship('Comment', backref='post', lazy=True, cascade='all, delete-orphan')
+    votes = db.relationship('Vote', backref='post', lazy=True, cascade='all, delete-orphan')
 
 class Comment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -51,6 +52,17 @@ class Comment(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
     user = db.relationship('User', backref=db.backref('comments', lazy=True))
+
+class Vote(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
+    value = db.Column(db.Integer, nullable=False)  # +1 up, -1 down
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'post_id', name='unique_vote'),)  # One vote per user/post
+
+    def __repr__(self):
+        return f'<Vote {self.value} by User {self.user_id} on Post {self.post_id}>'
 
 # Flask-Login setup
 login_manager = LoginManager()
@@ -79,12 +91,16 @@ INDEX_TEMPLATE = '''
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Simple Q&A Web App with Categories</title>
+    <title>Simple Q&A Web App with Upvotes</title>
     <style>
         body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
         .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
         .post img { max-width: 100%; height: auto; margin: 10px 0; border-radius: 8px; }
         .category { background: #e7f3ff; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+        .vote-score { background: #4caf50; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 10px; }
+        .vote-btn { padding: 4px 8px; margin: 0 2px; border: none; border-radius: 4px; cursor: pointer; }
+        .up-btn { background: #4caf50; color: white; }
+        .down-btn { background: #f44336; color: white; }
         .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
         form { margin: 20px 0; }
         input[type="text"], input[type="email"], input[type="password"], textarea, button, select { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
@@ -98,7 +114,7 @@ INDEX_TEMPLATE = '''
     </style>
 </head>
 <body>
-    <h1>Simple Q&A Board with Images & Categories</h1>
+    <h1>Simple Q&A Board with Upvotes & Categories</h1>
     <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button></div>
     {% with messages = get_flashed_messages() %}
       {% if messages %}
@@ -131,6 +147,9 @@ INDEX_TEMPLATE = '''
     {% for post in posts %}
     <div class="post" id="post-{{ post.id }}">
         <h3>{{ post.title }} <small>by {{ post.user.username }} in <span class="category">{{ post.category.name }}</span></small></h3>
+        <span class="vote-score">{{ post.score }}</span>
+        <button class="vote-btn up-btn" onclick="vote({{ post.id }}, 1)">↑</button>
+        <button class="vote-btn down-btn" onclick="vote({{ post.id }}, -1)">↓</button>
         <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
         {% if post.image_path %}
         <img src="{{ post.image_path }}" alt="Post image">
@@ -149,6 +168,17 @@ INDEX_TEMPLATE = '''
     {% endfor %}
     
     <script>
+        function vote(postId, value) {
+            fetch('/vote/' + postId, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({value: value})
+            }).then(response => response.json()).then(data => {
+                if (data.success) {
+                    location.reload();  // Refresh to show updated score
+                }
+            });
+        }
         function sharePost(id) {
             const url = window.location.href + '#post-' + id;
             if (navigator.share) {
@@ -226,7 +256,20 @@ with app.app_context():
         db.session.add_all([comment1, comment2, comment3])
         db.session.commit()
     
+    # Seed sample votes (if no votes on post1)
+    if Vote.query.filter_by(post_id=1).count() == 0:
+        # Upvotes on post1
+        Vote(user_id=admin_user.id, post_id=1, value=1)
+        Vote(user_id=demo_user.id, post_id=1, value=1)
+        db.session.add_all([Vote(user_id=admin_user.id, post_id=1, value=1), Vote(user_id=demo_user.id, post_id=1, value=1)])
+        # Downvote on post3 for variety
+        db.session.add(Vote(user_id=demo_user.id, post_id=3, value=-1))
+        db.session.commit()
+    
     print("Seeding complete!")  # For logs; remove in prod
+
+# Add property to Post for score calculation
+Post.score = property(lambda p: sum(v.value for v in p.votes) if p.votes else 0)
 
 @app.route('/', methods=['GET', 'POST'])
 @login_required
@@ -260,6 +303,34 @@ def category_filter(slug):
     posts = Post.query.filter_by(category_id=category.id).order_by(Post.timestamp.desc()).all()
     categories = Category.query.all()
     return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
+
+@app.route('/vote/<int:post_id>', methods=['POST'])
+@login_required
+def vote_post(post_id):
+    data = request.get_json()
+    vote_value = data.get('value', 0)
+    
+    post = Post.query.get_or_404(post_id)
+    existing_vote = Vote.query.filter_by(user_id=current_user.id, post_id=post.id).first()
+    
+    if existing_vote:
+        if existing_vote.value == vote_value:
+            # Unvote
+            db.session.delete(existing_vote)
+        else:
+            # Toggle
+            existing_vote.value = vote_value
+    else:
+        # New vote
+        new_vote = Vote(user_id=current_user.id, post_id=post.id, value=vote_value)
+        db.session.add(new_vote)
+    
+    db.session.commit()
+    
+    score = post.score  # Recalculate
+    return {'success': True, 'score': score}
+
+# ... (register, login, logout, comment, uploads routes unchanged from previous)
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
