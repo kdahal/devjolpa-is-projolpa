@@ -25,13 +25,23 @@ class User(UserMixin, db.Model):
     def __repr__(self):
         return f'<User {self.username}>'
 
+class Category(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    slug = db.Column(db.String(50), unique=True, nullable=False)  # For URL-friendly filters
+
+    def __repr__(self):
+        return f'<Category {self.name}>'
+
 class Post(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=False)
     image_path = db.Column(db.String(200))
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=False)
     user = db.relationship('User', backref=db.backref('posts', lazy=True))
+    category = db.relationship('Category', backref=db.backref('posts', lazy=True))
     comments = db.relationship('Comment', backref='post', lazy=True, cascade='all, delete-orphan')
 
 class Comment(db.Model):
@@ -63,17 +73,20 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Init DB and sample user (runs once)
-with app.app_context():
-    db.create_all()
-    if not User.query.filter_by(username='admin').first():
-        sample_user = User(username='admin', email='admin@example.com', password_hash=generate_password_hash('password'))
-        db.session.add(sample_user)
-        db.session.commit()
-        
 # Init DB and sample data (runs once)
 with app.app_context():
     db.create_all()
+    
+    # Seed categories if none
+    if Category.query.count() == 0:
+        categories = [
+            Category(name="Programming", slug="programming"),
+            Category(name="AI", slug="ai"),
+            Category(name="Web Dev", slug="web-dev"),
+            Category(name="General", slug="general")
+        ]
+        db.session.add_all(categories)
+        db.session.commit()
     
     # Seed admin if not exists
     if not User.query.filter_by(username='admin').first():
@@ -91,24 +104,28 @@ with app.app_context():
     else:
         demo_user = User.query.filter_by(username='demo').first()
     
-    # Seed sample posts (only if < 3 posts exist)
+    # Seed sample posts (only if < 3 posts exist; assign categories)
     post_count = Post.query.count()
     if post_count < 3:
-        # Post 1: Simple question
-        post1 = Post(title="What's the best way to learn Python in 2025?", user_id=admin_user.id)
+        cat_programming = Category.query.filter_by(slug='programming').first()
+        cat_ai = Category.query.filter_by(slug='ai').first()
+        cat_web_dev = Category.query.filter_by(slug='web-dev').first()
+        
+        # Post 1: Programming category
+        post1 = Post(title="What's the best way to learn Python in 2025?", user_id=admin_user.id, category_id=cat_programming.id)
         db.session.add(post1)
         
-        # Post 2: With "image" (placeholder path; upload real one later)
-        post2 = Post(title="Share your favorite app ideas!", image_path="/uploads/sample_image.jpg", user_id=demo_user.id)
+        # Post 2: Web Dev category, with placeholder image
+        post2 = Post(title="Share your favorite app ideas!", image_path="/uploads/sample_image.jpg", user_id=demo_user.id, category_id=cat_web_dev.id)
         db.session.add(post2)
         
-        # Post 3: Another Q&A
-        post3 = Post(title="How does AI change web dev?", user_id=admin_user.id)
+        # Post 3: AI category
+        post3 = Post(title="How does AI change web dev?", user_id=admin_user.id, category_id=cat_ai.id)
         db.session.add(post3)
         
         db.session.commit()
         
-        # Seed sample comments (after posts)
+        # Seed sample comments
         comment1 = Comment(text="Start with freeCodeCamp—it's hands-on!", user_id=demo_user.id, post_id=post1.id)
         comment2 = Comment(text="Agreed! Add some Flask projects too.", user_id=admin_user.id, post_id=post1.id)
         comment3 = Comment(text="Something conversational like this app!", user_id=demo_user.id, post_id=post3.id)
@@ -123,6 +140,7 @@ with app.app_context():
 def index():
     if request.method == 'POST':
         title = request.form.get('title', '').strip()
+        category_id = request.form.get('category_id', type=int)
         image_path = None
         
         if 'image' in request.files:
@@ -133,37 +151,39 @@ def index():
                 file.save(filepath)
                 image_path = f"/uploads/{filename}"
         
-        if title:
-            post = Post(title=title, image_path=image_path, user_id=current_user.id)
+        if title and category_id:
+            post = Post(title=title, image_path=image_path, user_id=current_user.id, category_id=category_id)
             db.session.add(post)
             db.session.commit()
     
     posts = Post.query.order_by(Post.timestamp.desc()).all()
     
-    # HTML template
+    # HTML template (added category select and display)
     html = '''
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>Simple Q&A Web App with DB</title>
+        <title>Simple Q&A Web App with Categories</title>
         <style>
             body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
             .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
             .post img { max-width: 100%; height: auto; margin: 10px 0; border-radius: 8px; }
+            .category { background: #e7f3ff; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
             .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
             form { margin: 20px 0; }
-            input[type="text"], input[type="email"], input[type="password"], textarea, button { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
+            input[type="text"], input[type="email"], input[type="password"], textarea, button, select { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
             input[type="file"] { max-width: 400px; }
             .share-btn { background: #1da1f2; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
             .share-btn:hover { background: #0d8bd9; }
             .user-info { float: right; color: #666; }
             .logout { background: #dc3545; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
             .flash { color: red; }
+            .cat-filter { margin: 10px 0; }
         </style>
     </head>
     <body>
-        <h1>Simple Q&A Board with Images & DB</h1>
+        <h1>Simple Q&A Board with Images & Categories</h1>
         <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button></div>
         {% with messages = get_flashed_messages() %}
           {% if messages %}
@@ -175,13 +195,27 @@ def index():
         
         <form method="POST" enctype="multipart/form-data">
             <input type="text" name="title" placeholder="Post a question or update..." required>
+            <select name="category_id" required>
+                <option value="">Select Category</option>
+                {% for cat in categories %}
+                <option value="{{ cat.id }}">{{ cat.name }}</option>
+                {% endfor %}
+            </select>
             <input type="file" name="image" accept="image/*">
             <button type="submit">Post with Image</button>
         </form>
         
+        <div class="cat-filter">
+            Filter by Category: 
+            {% for cat in categories %}
+            <a href="/category/{{ cat.slug }}" style="margin: 0 5px; color: #1da1f2;">{{ cat.name }}</a>
+            {% endfor %}
+            | <a href="/">All</a>
+        </div>
+        
         {% for post in posts %}
         <div class="post" id="post-{{ post.id }}">
-            <h3>{{ post.title }} <small>by {{ post.user.username }}</small></h3>
+            <h3>{{ post.title }} <small>by {{ post.user.username }} in <span class="category">{{ post.category.name }}</span></small></h3>
             <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
             {% if post.image_path %}
             <img src="{{ post.image_path }}" alt="Post image">
@@ -216,7 +250,15 @@ def index():
     </body>
     </html>
     '''
-    return render_template_string(html, posts=posts)
+    categories = Category.query.all()
+    return render_template_string(html, posts=posts, categories=categories)
+
+@app.route('/category/<slug>')
+@login_required
+def category_filter(slug):
+    category = Category.query.filter_by(slug=slug).first_or_404()
+    posts = Post.query.filter_by(category_id=category.id).order_by(Post.timestamp.desc()).all()
+    return render_template_string(index.__self__.html, posts=posts, categories=Category.query.all())  # Reuse index template
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
