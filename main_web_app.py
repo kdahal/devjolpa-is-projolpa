@@ -1,6 +1,7 @@
-from flask import Flask, request, render_template_string, send_from_directory, redirect, url_for, flash
+from flask import Flask, request, render_template_string, send_from_directory, redirect, url_for, flash, jsonify
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import joinedload
 from datetime import datetime
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -15,7 +16,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Models
+# Models (unchanged except lazy='select' for votes)
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -43,7 +44,7 @@ class Post(db.Model):
     user = db.relationship('User', backref=db.backref('posts', lazy=True))
     category = db.relationship('Category', backref=db.backref('posts', lazy=True))
     comments = db.relationship('Comment', backref='post', lazy=True, cascade='all, delete-orphan')
-    votes = db.relationship('Vote', backref='post', lazy=True, cascade='all, delete-orphan')
+    votes = db.relationship('Vote', backref='post', lazy='select', cascade='all, delete-orphan')
 
 class Comment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -59,10 +60,13 @@ class Vote(db.Model):
     post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
     value = db.Column(db.Integer, nullable=False)  # +1 up, -1 down
 
-    __table_args__ = (db.UniqueConstraint('user_id', 'post_id', name='unique_vote'),)  # One vote per user/post
+    __table_args__ = (db.UniqueConstraint('user_id', 'post_id', name='unique_vote'),)
 
     def __repr__(self):
         return f'<Vote {self.value} by User {self.user_id} on Post {self.post_id}>'
+
+# Add property to Post for score calculation
+Post.score = property(lambda p: sum(v.value for v in p.votes) if p.votes else 0)
 
 # Flask-Login setup
 login_manager = LoginManager()
@@ -71,7 +75,7 @@ login_manager.login_view = 'login'
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 # Config for uploads
 UPLOAD_FOLDER = 'uploads'
@@ -85,7 +89,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Global HTML template for index and category views
+# Global HTML template (JS now updates score in-place)
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -147,14 +151,14 @@ INDEX_TEMPLATE = '''
     {% for post in posts %}
     <div class="post" id="post-{{ post.id }}">
         <h3>{{ post.title }} <small>by {{ post.user.username }} in <span class="category">{{ post.category.name }}</span></small></h3>
-        <span class="vote-score">{{ post.score }}</span>
-        <button class="vote-btn up-btn" onclick="vote({{ post.id }}, 1)">↑</button>
-        <button class="vote-btn down-btn" onclick="vote({{ post.id }}, -1)">↓</button>
+        <span class="vote-score" id="score-{{ post.id }}">{{ post.score }}</span>
+        <button type="button" class="vote-btn up-btn" onclick="vote(event, {{ post.id }}, 1)">↑</button>
+        <button type="button" class="vote-btn down-btn" onclick="vote(event, {{ post.id }}, -1)">↓</button>
         <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
         {% if post.image_path %}
         <img src="{{ post.image_path }}" alt="Post image">
         {% endif %}
-        <button class="share-btn" onclick="sharePost({{ post.id }})">Share</button>
+        <button type="button" class="share-btn" onclick="sharePost({{ post.id }})">Share</button>
         
         <form method="POST" action="/comment/{{ post.id }}">
             <textarea name="comment" placeholder="Add a comment..." rows="2"></textarea>
@@ -168,16 +172,19 @@ INDEX_TEMPLATE = '''
     {% endfor %}
     
     <script>
-        function vote(postId, value) {
+        function vote(event, postId, value) {
+            event.preventDefault();
+            event.stopPropagation();  // Block bubble to forms
+            const scoreEl = document.getElementById('score-' + postId);
             fetch('/vote/' + postId, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({value: value})
             }).then(response => response.json()).then(data => {
                 if (data.success) {
-                    location.reload();  // Refresh to show updated score
+                    scoreEl.textContent = data.score;  // Update score in-place
                 }
-            });
+            }).catch(err => console.error('Vote error:', err));
         }
         function sharePost(id) {
             const url = window.location.href + '#post-' + id;
@@ -196,7 +203,7 @@ INDEX_TEMPLATE = '''
 </html>
 '''
 
-# Init DB and sample data (runs once)
+# Init DB and sample data (runs once) - Cleaned
 with app.app_context():
     db.create_all()
     
@@ -212,65 +219,51 @@ with app.app_context():
         db.session.commit()
     
     # Seed admin if not exists
-    if not User.query.filter_by(username='admin').first():
+    if not db.session.query(User).filter_by(username='admin').first():
         admin_user = User(username='admin', email='admin@example.com', password_hash=generate_password_hash('password'))
         db.session.add(admin_user)
         db.session.commit()
-    else:
-        admin_user = User.query.filter_by(username='admin').first()
+    admin_user = db.session.query(User).filter_by(username='admin').first()
     
-    # Seed a demo user
-    if not User.query.filter_by(username='demo').first():
+    # Seed demo if not exists
+    if not db.session.query(User).filter_by(username='demo').first():
         demo_user = User(username='demo', email='demo@example.com', password_hash=generate_password_hash('demopass'))
         db.session.add(demo_user)
         db.session.commit()
-    else:
-        demo_user = User.query.filter_by(username='demo').first()
+    demo_user = db.session.query(User).filter_by(username='demo').first()
     
-    # Seed sample posts (only if < 3 posts exist; assign categories)
-    post_count = Post.query.count()
-    if post_count < 3:
+    # Seed sample posts if < 3
+    if Post.query.count() < 3:
         cat_programming = Category.query.filter_by(slug='programming').first()
         cat_ai = Category.query.filter_by(slug='ai').first()
         cat_web_dev = Category.query.filter_by(slug='web-dev').first()
         
-        # Post 1: Programming category
         post1 = Post(title="What's the best way to learn Python in 2025?", user_id=admin_user.id, category_id=cat_programming.id)
-        db.session.add(post1)
-        
-        # Post 2: Web Dev category, with placeholder image
         post2 = Post(title="Share your favorite app ideas!", image_path="/uploads/sample_image.jpg", user_id=demo_user.id, category_id=cat_web_dev.id)
-        db.session.add(post2)
-        
-        # Post 3: AI category
         post3 = Post(title="How does AI change web dev?", user_id=admin_user.id, category_id=cat_ai.id)
-        db.session.add(post3)
         
+        db.session.add_all([post1, post2, post3])
         db.session.commit()
         
-        # Seed sample comments
+        # Comments
         comment1 = Comment(text="Start with freeCodeCamp—it's hands-on!", user_id=demo_user.id, post_id=post1.id)
         comment2 = Comment(text="Agreed! Add some Flask projects too.", user_id=admin_user.id, post_id=post1.id)
         comment3 = Comment(text="Something conversational like this app!", user_id=demo_user.id, post_id=post3.id)
-        
         db.session.add_all([comment1, comment2, comment3])
         db.session.commit()
     
-    # Seed sample votes (if no votes on post1)
-    if Vote.query.filter_by(post_id=1).count() == 0:
-        # Upvotes on post1
-        Vote(user_id=admin_user.id, post_id=1, value=1)
-        Vote(user_id=demo_user.id, post_id=1, value=1)
-        db.session.add_all([Vote(user_id=admin_user.id, post_id=1, value=1), Vote(user_id=demo_user.id, post_id=1, value=1)])
-        # Downvote on post3 for variety
-        db.session.add(Vote(user_id=demo_user.id, post_id=3, value=-1))
+    # Seed sample votes - Commit posts first, then votes
+    if db.session.query(Vote).filter_by(post_id=1).count() == 0:
+        post1 = db.session.get(Post, 1)
+        post3 = db.session.get(Post, 3)
+        db.session.add(Vote(user_id=admin_user.id, post_id=post1.id, value=1))
+        db.session.add(Vote(user_id=demo_user.id, post_id=post1.id, value=1))
+        db.session.add(Vote(user_id=demo_user.id, post_id=post3.id, value=-1))
         db.session.commit()
     
-    print("Seeding complete!")  # For logs; remove in prod
+    print("Seeding complete!")
 
-# Add property to Post for score calculation
-Post.score = property(lambda p: sum(v.value for v in p.votes) if p.votes else 0)
-
+# Routes (unchanged except vote jsonify & score refresh)
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
@@ -292,7 +285,7 @@ def index():
             db.session.add(post)
             db.session.commit()
     
-    posts = Post.query.order_by(Post.timestamp.desc()).all()
+    posts = Post.query.options(joinedload(Post.votes)).order_by(Post.timestamp.desc()).all()
     categories = Category.query.all()
     return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
 
@@ -300,7 +293,7 @@ def index():
 @login_required
 def category_filter(slug):
     category = Category.query.filter_by(slug=slug).first_or_404()
-    posts = Post.query.filter_by(category_id=category.id).order_by(Post.timestamp.desc()).all()
+    posts = Post.query.options(joinedload(Post.votes)).filter_by(category_id=category.id).order_by(Post.timestamp.desc()).all()
     categories = Category.query.all()
     return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
 
@@ -310,28 +303,29 @@ def vote_post(post_id):
     data = request.get_json()
     vote_value = data.get('value', 0)
     
-    post = Post.query.get_or_404(post_id)
-    existing_vote = Vote.query.filter_by(user_id=current_user.id, post_id=post.id).first()
+    post = db.session.get(Post, post_id)
+    if not post:
+        return jsonify({'success': False}), 404
+    
+    existing_vote = db.session.query(Vote).filter_by(user_id=current_user.id, post_id=post.id).first()
     
     if existing_vote:
         if existing_vote.value == vote_value:
-            # Unvote
             db.session.delete(existing_vote)
         else:
-            # Toggle
             existing_vote.value = vote_value
     else:
-        # New vote
         new_vote = Vote(user_id=current_user.id, post_id=post.id, value=vote_value)
         db.session.add(new_vote)
     
     db.session.commit()
     
-    score = post.score  # Recalculate
-    return {'success': True, 'score': score}
+    # Refresh post with votes for accurate score
+    post = db.session.get(Post, post.id, options=[joinedload(Post.votes)])
+    score = post.score
+    return jsonify({'success': True, 'score': score})
 
-# ... (register, login, logout, comment, uploads routes unchanged from previous)
-
+# Register, login, logout, comment, uploads (unchanged)
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -339,7 +333,7 @@ def register():
         email = request.form.get('email').strip()
         password = request.form.get('password')
         
-        if User.query.filter_by(username=username).first() or not all([username, email, password]):
+        if db.session.query(User).filter_by(username=username).first() or not all([username, email, password]):
             flash('Username taken or invalid input!')
             return redirect(url_for('register'))
         
@@ -378,7 +372,7 @@ def login():
         username = request.form.get('username').strip()
         password = request.form.get('password')
         
-        user = User.query.filter_by(username=username).first()
+        user = db.session.query(User).filter_by(username=username).first()
         if user and check_password_hash(user.password_hash, password):
             login_user(user)
             return redirect(url_for('index'))
@@ -415,7 +409,7 @@ def logout():
 @login_required
 def add_comment(post_id):
     comment_text = request.form.get('comment', '').strip()
-    post = Post.query.get(post_id)
+    post = db.session.get(Post, post_id)
     if comment_text and post:
         comment = Comment(text=comment_text, user_id=current_user.id, post_id=post.id)
         db.session.add(comment)
