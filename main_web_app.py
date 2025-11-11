@@ -70,6 +70,53 @@ with app.app_context():
         sample_user = User(username='admin', email='admin@example.com', password_hash=generate_password_hash('password'))
         db.session.add(sample_user)
         db.session.commit()
+        
+# Init DB and sample data (runs once)
+with app.app_context():
+    db.create_all()
+    
+    # Seed admin if not exists
+    if not User.query.filter_by(username='admin').first():
+        admin_user = User(username='admin', email='admin@example.com', password_hash=generate_password_hash('password'))
+        db.session.add(admin_user)
+        db.session.commit()
+    else:
+        admin_user = User.query.filter_by(username='admin').first()
+    
+    # Seed a demo user
+    if not User.query.filter_by(username='demo').first():
+        demo_user = User(username='demo', email='demo@example.com', password_hash=generate_password_hash('demopass'))
+        db.session.add(demo_user)
+        db.session.commit()
+    else:
+        demo_user = User.query.filter_by(username='demo').first()
+    
+    # Seed sample posts (only if < 3 posts exist)
+    post_count = Post.query.count()
+    if post_count < 3:
+        # Post 1: Simple question
+        post1 = Post(title="What's the best way to learn Python in 2025?", user_id=admin_user.id)
+        db.session.add(post1)
+        
+        # Post 2: With "image" (placeholder path; upload real one later)
+        post2 = Post(title="Share your favorite app ideas!", image_path="/uploads/sample_image.jpg", user_id=demo_user.id)
+        db.session.add(post2)
+        
+        # Post 3: Another Q&A
+        post3 = Post(title="How does AI change web dev?", user_id=admin_user.id)
+        db.session.add(post3)
+        
+        db.session.commit()
+        
+        # Seed sample comments (after posts)
+        comment1 = Comment(text="Start with freeCodeCamp—it's hands-on!", user_id=demo_user.id, post_id=post1.id)
+        comment2 = Comment(text="Agreed! Add some Flask projects too.", user_id=admin_user.id, post_id=post1.id)
+        comment3 = Comment(text="Something conversational like this app!", user_id=demo_user.id, post_id=post3.id)
+        
+        db.session.add_all([comment1, comment2, comment3])
+        db.session.commit()
+    
+    print("Seeding complete!")  # For logs; remove in prod
 
 @app.route('/', methods=['GET', 'POST'])
 @login_required
