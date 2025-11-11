@@ -1,0 +1,34 @@
+# Python/Flask
+__pycache__/
+*.py[cod]  # Compiled Python files
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Database
+app.db
+
+# Uploads (user-generated images/files)
+uploads/
+
+# Logs
+*.log
+logs/
+
+# OS-specific
+.DS_Store  # macOS
+Thumbs.db  # Windows
+ehthumbs.db
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Render/Heroku deploys (if needed)
+.env.local
