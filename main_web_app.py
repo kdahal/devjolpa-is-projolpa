@@ -73,6 +73,99 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# Global HTML template for index and category views
+INDEX_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Simple Q&A Web App with Categories</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
+        .post img { max-width: 100%; height: auto; margin: 10px 0; border-radius: 8px; }
+        .category { background: #e7f3ff; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+        .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
+        form { margin: 20px 0; }
+        input[type="text"], input[type="email"], input[type="password"], textarea, button, select { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
+        input[type="file"] { max-width: 400px; }
+        .share-btn { background: #1da1f2; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
+        .share-btn:hover { background: #0d8bd9; }
+        .user-info { float: right; color: #666; }
+        .logout { background: #dc3545; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
+        .flash { color: red; }
+        .cat-filter { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Simple Q&A Board with Images & Categories</h1>
+    <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button></div>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for message in messages %}
+          <div class="flash">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    
+    <form method="POST" enctype="multipart/form-data">
+        <input type="text" name="title" placeholder="Post a question or update..." required>
+        <select name="category_id" required>
+            <option value="">Select Category</option>
+            {% for cat in categories %}
+            <option value="{{ cat.id }}">{{ cat.name }}</option>
+            {% endfor %}
+        </select>
+        <input type="file" name="image" accept="image/*">
+        <button type="submit">Post with Image</button>
+    </form>
+    
+    <div class="cat-filter">
+        Filter by Category: 
+        {% for cat in categories %}
+        <a href="/category/{{ cat.slug }}" style="margin: 0 5px; color: #1da1f2;">{{ cat.name }}</a>
+        {% endfor %}
+        | <a href="/">All</a>
+    </div>
+    
+    {% for post in posts %}
+    <div class="post" id="post-{{ post.id }}">
+        <h3>{{ post.title }} <small>by {{ post.user.username }} in <span class="category">{{ post.category.name }}</span></small></h3>
+        <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
+        {% if post.image_path %}
+        <img src="{{ post.image_path }}" alt="Post image">
+        {% endif %}
+        <button class="share-btn" onclick="sharePost({{ post.id }})">Share</button>
+        
+        <form method="POST" action="/comment/{{ post.id }}">
+            <textarea name="comment" placeholder="Add a comment..." rows="2"></textarea>
+            <button type="submit">Comment</button>
+        </form>
+        
+        {% for comment in post.comments %}
+        <div class="comment">{{ comment.text }} <small>by {{ comment.user.username }} - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+    
+    <script>
+        function sharePost(id) {
+            const url = window.location.href + '#post-' + id;
+            if (navigator.share) {
+                navigator.share({ title: 'Check this post!', url: url });
+            } else {
+                navigator.clipboard.writeText(url).then(() => {
+                    alert('Link copied to clipboard!');
+                }).catch(() => {
+                    alert('Link: ' + url);
+                });
+            }
+        }
+    </script>
+</body>
+</html>
+'''
+
 # Init DB and sample data (runs once)
 with app.app_context():
     db.create_all()
@@ -157,108 +250,16 @@ def index():
             db.session.commit()
     
     posts = Post.query.order_by(Post.timestamp.desc()).all()
-    
-    # HTML template (added category select and display)
-    html = '''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>Simple Q&A Web App with Categories</title>
-        <style>
-            body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
-            .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
-            .post img { max-width: 100%; height: auto; margin: 10px 0; border-radius: 8px; }
-            .category { background: #e7f3ff; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
-            .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
-            form { margin: 20px 0; }
-            input[type="text"], input[type="email"], input[type="password"], textarea, button, select { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
-            input[type="file"] { max-width: 400px; }
-            .share-btn { background: #1da1f2; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
-            .share-btn:hover { background: #0d8bd9; }
-            .user-info { float: right; color: #666; }
-            .logout { background: #dc3545; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
-            .flash { color: red; }
-            .cat-filter { margin: 10px 0; }
-        </style>
-    </head>
-    <body>
-        <h1>Simple Q&A Board with Images & Categories</h1>
-        <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button></div>
-        {% with messages = get_flashed_messages() %}
-          {% if messages %}
-            {% for message in messages %}
-              <div class="flash">{{ message }}</div>
-            {% endfor %}
-          {% endif %}
-        {% endwith %}
-        
-        <form method="POST" enctype="multipart/form-data">
-            <input type="text" name="title" placeholder="Post a question or update..." required>
-            <select name="category_id" required>
-                <option value="">Select Category</option>
-                {% for cat in categories %}
-                <option value="{{ cat.id }}">{{ cat.name }}</option>
-                {% endfor %}
-            </select>
-            <input type="file" name="image" accept="image/*">
-            <button type="submit">Post with Image</button>
-        </form>
-        
-        <div class="cat-filter">
-            Filter by Category: 
-            {% for cat in categories %}
-            <a href="/category/{{ cat.slug }}" style="margin: 0 5px; color: #1da1f2;">{{ cat.name }}</a>
-            {% endfor %}
-            | <a href="/">All</a>
-        </div>
-        
-        {% for post in posts %}
-        <div class="post" id="post-{{ post.id }}">
-            <h3>{{ post.title }} <small>by {{ post.user.username }} in <span class="category">{{ post.category.name }}</span></small></h3>
-            <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
-            {% if post.image_path %}
-            <img src="{{ post.image_path }}" alt="Post image">
-            {% endif %}
-            <button class="share-btn" onclick="sharePost({{ post.id }})">Share</button>
-            
-            <form method="POST" action="/comment/{{ post.id }}">
-                <textarea name="comment" placeholder="Add a comment..." rows="2"></textarea>
-                <button type="submit">Comment</button>
-            </form>
-            
-            {% for comment in post.comments %}
-            <div class="comment">{{ comment.text }} <small>by {{ comment.user.username }} - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
-            {% endfor %}
-        </div>
-        {% endfor %}
-        
-        <script>
-            function sharePost(id) {
-                const url = window.location.href + '#post-' + id;
-                if (navigator.share) {
-                    navigator.share({ title: 'Check this post!', url: url });
-                } else {
-                    navigator.clipboard.writeText(url).then(() => {
-                        alert('Link copied to clipboard!');
-                    }).catch(() => {
-                        alert('Link: ' + url);
-                    });
-                }
-            }
-        </script>
-    </body>
-    </html>
-    '''
     categories = Category.query.all()
-    return render_template_string(html, posts=posts, categories=categories)
+    return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
 
 @app.route('/category/<slug>')
 @login_required
 def category_filter(slug):
     category = Category.query.filter_by(slug=slug).first_or_404()
     posts = Post.query.filter_by(category_id=category.id).order_by(Post.timestamp.desc()).all()
-    return render_template_string(index.__self__.html, posts=posts, categories=Category.query.all())  # Reuse index template
+    categories = Category.query.all()
+    return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories)
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
