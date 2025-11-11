@@ -1,12 +1,55 @@
 from flask import Flask, request, render_template_string, send_from_directory, redirect, url_for, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key_here'  # Change this in production!
+app.secret_key = os.environ.get('SECRET_KEY', 'your_secret_key_here')  # Use env var on Render
+
+# SQLite config
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+
+# Models
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+
+    def __repr__(self):
+        return f'<User {self.username}>'
+
+class Post(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    image_path = db.Column(db.String(200))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user = db.relationship('User', backref=db.backref('posts', lazy=True))
+    comments = db.relationship('Comment', backref='post', lazy=True, cascade='all, delete-orphan')
+
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.String(500), nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
+    user = db.relationship('User', backref=db.backref('comments', lazy=True))
+
+# Flask-Login setup
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
 # Config for uploads
 UPLOAD_FOLDER = 'uploads'
@@ -17,33 +60,16 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Flask-Login setup
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
-
-# Simple User class
-class User(UserMixin):
-    def __init__(self, id, username, email, password_hash):
-        self.id = id
-        self.username = username
-        self.email = email
-        self.password_hash = password_hash
-
-# In-memory users: Now keyed by ID (int) for easy lookup
-users = {}  # {user_id: User}
-sample_user = User(1, 'admin', 'admin@example.com', generate_password_hash('password'))
-users[1] = sample_user  # Pre-create test user
-
-@login_manager.user_loader
-def load_user(user_id):
-    return users.get(int(user_id))
-
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# In-memory storage: posts now include 'user_id'
-posts = []
+# Init DB and sample user (runs once)
+with app.app_context():
+    db.create_all()
+    if not User.query.filter_by(username='admin').first():
+        sample_user = User(username='admin', email='admin@example.com', password_hash=generate_password_hash('password'))
+        db.session.add(sample_user)
+        db.session.commit()
 
 @app.route('/', methods=['GET', 'POST'])
 @login_required
@@ -55,28 +81,25 @@ def index():
         if 'image' in request.files:
             file = request.files['image']
             if file.filename and allowed_file(file.filename):
-                filename = secure_filename(f'post_{len(posts)}_{file.filename}')
+                filename = secure_filename(f'post_{Post.query.count()}_{file.filename}')
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
                 image_path = f"/uploads/{filename}"
         
         if title:
-            posts.append({
-                'id': len(posts),
-                'title': title,
-                'image_path': image_path,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
-                'user_id': current_user.id,
-                'comments': []
-            })
+            post = Post(title=title, image_path=image_path, user_id=current_user.id)
+            db.session.add(post)
+            db.session.commit()
     
-    # HTML template (now looks up users by ID)
+    posts = Post.query.order_by(Post.timestamp.desc()).all()
+    
+    # HTML template
     html = '''
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>Simple Q&A Web App with Logins</title>
+        <title>Simple Q&A Web App with DB</title>
         <style>
             body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
             .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
@@ -93,7 +116,7 @@ def index():
         </style>
     </head>
     <body>
-        <h1>Simple Q&A Board with Images</h1>
+        <h1>Simple Q&A Board with Images & DB</h1>
         <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button></div>
         {% with messages = get_flashed_messages() %}
           {% if messages %}
@@ -111,8 +134,8 @@ def index():
         
         {% for post in posts %}
         <div class="post" id="post-{{ post.id }}">
-            <h3>{{ post.title }} <small>by {{ users[post.user_id].username }}</small></h3>
-            <small>{{ post.timestamp }}</small>
+            <h3>{{ post.title }} <small>by {{ post.user.username }}</small></h3>
+            <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
             {% if post.image_path %}
             <img src="{{ post.image_path }}" alt="Post image">
             {% endif %}
@@ -124,7 +147,7 @@ def index():
             </form>
             
             {% for comment in post.comments %}
-            <div class="comment">{{ comment.text }} <small>by {{ users[comment.user_id].username }} - {{ comment.timestamp }}</small></div>
+            <div class="comment">{{ comment.text }} <small>by {{ comment.user.username }} - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
             {% endfor %}
         </div>
         {% endfor %}
@@ -146,7 +169,7 @@ def index():
     </body>
     </html>
     '''
-    return render_template_string(html, posts=posts, users=users)
+    return render_template_string(html, posts=posts)
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -155,23 +178,28 @@ def register():
         email = request.form.get('email').strip()
         password = request.form.get('password')
         
-        # Check if username exists (iterate since keyed by ID)
-        if any(u.username == username for u in users.values()) or not all([username, email, password]):
+        if User.query.filter_by(username=username).first() or not all([username, email, password]):
             flash('Username taken or invalid input!')
             return redirect(url_for('register'))
         
-        user_id = len(users) + 1
         password_hash = generate_password_hash(password)
-        new_user = User(user_id, username, email, password_hash)
-        users[user_id] = new_user  # Key by ID
+        new_user = User(username=username, email=email, password_hash=password_hash)
+        db.session.add(new_user)
+        db.session.commit()
         flash('Registered! Please log in.')
         return redirect(url_for('login'))
     
-    # Simple register HTML
     html = '''
     <!DOCTYPE html>
     <html><head><title>Register</title></head><body>
     <h1>Register</h1>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for message in messages %}
+          <p style="color: red;">{{ message }}</p>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
     <form method="POST">
         <input type="text" name="username" placeholder="Username" required>
         <input type="email" name="email" placeholder="Email" required>
@@ -189,14 +217,12 @@ def login():
         username = request.form.get('username').strip()
         password = request.form.get('password')
         
-        # Find user by username
-        target_user = next((u for u in users.values() if u.username == username), None)
-        if target_user and check_password_hash(target_user.password_hash, password):
-            login_user(target_user)
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password_hash, password):
+            login_user(user)
             return redirect(url_for('index'))
         flash('Invalid credentials!')
     
-    # Simple login HTML (with flashes)
     html = '''
     <!DOCTYPE html>
     <html><head><title>Login</title></head><body>
@@ -228,12 +254,11 @@ def logout():
 @login_required
 def add_comment(post_id):
     comment_text = request.form.get('comment', '').strip()
-    if comment_text and 0 <= post_id < len(posts):
-        posts[post_id]['comments'].append({
-            'text': comment_text,
-            'user_id': current_user.id,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M')
-        })
+    post = Post.query.get(post_id)
+    if comment_text and post:
+        comment = Comment(text=comment_text, user_id=current_user.id, post_id=post.id)
+        db.session.add(comment)
+        db.session.commit()
     return index()
 
 @app.route('/uploads/<filename>')
@@ -242,4 +267,4 @@ def uploaded_file(filename):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)  # debug=False for prod
+    app.run(host='0.0.0.0', port=port, debug=False)
