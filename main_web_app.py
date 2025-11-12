@@ -115,6 +115,80 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Global INDEX_TEMPLATE (added bell icon with unread count)
+# Profile Template
+PROFILE_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Profile - {{ user.username }}</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .bio { background: #f9f9f9; padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .stats { background: #e7f3ff; padding: 10px; border-radius: 4px; }
+        .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
+        .vote-score { background: #4caf50; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 10px; }
+        .vote-btn { padding: 4px 8px; margin: 0 2px; border: none; border-radius: 4px; cursor: pointer; }
+        .up-btn { background: #4caf50; color: white; }
+        .down-btn { background: #f44336; color: white; }
+        .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
+        form { margin: 20px 0; }
+        input[type="text"], textarea, button { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
+        .back-link { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Profile: {{ user.username }}</h1>
+    <a href="/" class="back-link">← Back to Feed</a>
+    <div class="stats">
+        <strong>Karma: {{ user.karma }}</strong> | Posts: {{ user.posts|length }} | Joined: {{ user.id }}  <!-- ID as placeholder for join date -->
+    </div>
+    {% if user.bio %}
+    <div class="bio">{{ user.bio }}</div>
+    {% endif %}
+    {% if current_user.username == user.username %}
+    <form method="POST" action="/profile/{{ user.username }}/edit">
+        <textarea name="bio" placeholder="Update your bio..." rows="3">{{ user.bio or '' }}</textarea>
+        <button type="submit">Update Bio</button>
+    </form>
+    {% endif %}
+    
+    <h2>Posts by {{ user.username }}</h2>
+    {% for post in posts %}
+    <div class="post" id="post-{{ post.id }}">
+        <h3>{{ post.title }} <small>in <span class="category">{{ post.category.name }}</span></small></h3>
+        <span class="vote-score" id="score-{{ post.id }}">{{ post.score }}</span>
+        <button type="button" class="vote-btn up-btn" onclick="vote(event, {{ post.id }}, 1)">↑</button>
+        <button type="button" class="vote-btn down-btn" onclick="vote(event, {{ post.id }}, -1)">↓</button>
+        <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
+        {% if post.image_path %}
+        <img src="{{ post.image_path }}" alt="Post image">
+        {% endif %}
+        {% for comment in post.comments %}
+        <div class="comment">{{ comment.text }} <small>by {{ comment.user.username }} - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+    
+    <script>
+        function vote(event, postId, value) {
+            event.preventDefault();
+            event.stopPropagation();
+            const scoreEl = document.getElementById('score-' + postId);
+            fetch('/vote/' + postId, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({value: value})
+            }).then(response => response.json()).then(data => {
+                if (data.success) {
+                    scoreEl.textContent = data.score;
+                }
+            }).catch(err => console.error('Vote error:', err));
+        }
+    </script>
+</body>
+</html>
+'''
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
