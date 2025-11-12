@@ -371,6 +371,102 @@ NOTIFICATIONS_TEMPLATE = '''
 </html>
 '''
 
+# Single Post Template
+SINGLE_POST_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Post - {{ post.title }}</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .post { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
+        .post img { max-width: 100%; height: auto; margin: 10px 0; border-radius: 8px; }
+        .category { background: #e7f3ff; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+        .vote-score { background: #4caf50; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 10px; }
+        .vote-btn { padding: 4px 8px; margin: 0 2px; border: none; border-radius: 4px; cursor: pointer; }
+        .up-btn { background: #4caf50; color: white; }
+        .down-btn { background: #f44336; color: white; }
+        .comment { margin-left: 20px; padding: 5px; background: #f9f9f9; border-left: 3px solid #ccc; }
+        form { margin: 20px 0; }
+        input[type="text"], input[type="email"], input[type="password"], textarea, button, select { display: block; margin: 5px 0; padding: 8px; width: 100%; max-width: 400px; box-sizing: border-box; }
+        input[type="file"] { max-width: 400px; }
+        .share-btn { background: #1da1f2; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
+        .share-btn:hover { background: #0d8bd9; }
+        .user-info { float: right; color: #666; }
+        .logout { background: #dc3545; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px; }
+        .flash { color: red; }
+        .back-link { margin: 10px 0; }
+        a.username { color: #1da1f2; text-decoration: none; }
+        a.username:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>{{ post.title }}</h1>
+    <a href="/" class="back-link">← Back to Feed</a>
+    <div class="user-info">Logged in as {{ current_user.username }} | <button class="logout" onclick="location.href='/logout'">Logout</button>
+        <span class="bell" onclick="location.href='/notifications'" title="Notifications">
+            🔔
+            {% if current_user.unread_notifications > 0 %}
+            <span class="bell-badge">{{ current_user.unread_notifications }}</span>
+            {% endif %}
+        </span>
+    </div>
+    
+    <div class="post">
+        <small>by <a href="/profile/{{ post.user.username }}" class="username">{{ post.user.username }}</a> in <span class="category">{{ post.category.name }}</span></small>
+        <span class="vote-score" id="score-{{ post.id }}">{{ post.score }}</span>
+        <button type="button" class="vote-btn up-btn" onclick="vote(event, {{ post.id }}, 1)">↑</button>
+        <button type="button" class="vote-btn down-btn" onclick="vote(event, {{ post.id }}, -1)">↓</button>
+        <small>{{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
+        {% if post.image_path %}
+        <img src="{{ post.image_path }}" alt="Post image">
+        {% endif %}
+        <button type="button" class="share-btn" onclick="sharePost({{ post.id }})">Share</button>
+    </div>
+    
+    <h2>Comments</h2>
+    <form method="POST" action="/comment/{{ post.id }}">
+        <textarea name="comment" placeholder="Add a comment..." rows="2"></textarea>
+        <button type="submit">Comment</button>
+    </form>
+    
+    {% for comment in post.comments %}
+    <div class="comment">{{ comment.text }} <small>by <a href="/profile/{{ comment.user.username }}" class="username">{{ comment.user.username }}</a> - {{ comment.timestamp.strftime('%Y-%m-%d %H:%M') }}</small></div>
+    {% endfor %}
+    
+    <script>
+        function vote(event, postId, value) {
+            event.preventDefault();
+            event.stopPropagation();
+            const scoreEl = document.getElementById('score-' + postId);
+            fetch('/vote/' + postId, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({value: value})
+            }).then(response => response.json()).then(data => {
+                if (data.success) {
+                    scoreEl.textContent = data.score;
+                }
+            }).catch(err => console.error('Vote error:', err));
+        }
+        function sharePost(id) {
+            const url = window.location.href;
+            if (navigator.share) {
+                navigator.share({ title: 'Check this post!', url: url });
+            } else {
+                navigator.clipboard.writeText(url).then(() => {
+                    alert('Link copied to clipboard!');
+                }).catch(() => {
+                    alert('Link: ' + url);
+                });
+            }
+        }
+    </script>
+</body>
+</html>
+'''
+
 # Init DB and sample data (added sample notifications)
 with app.app_context():
     db.create_all()
@@ -514,6 +610,23 @@ def category_filter(slug):
     posts = Post.query.options(joinedload(Post.votes)).filter_by(category_id=category.id).order_by(Post.timestamp.desc()).all()
     categories = Category.query.all()
     return render_template_string(INDEX_TEMPLATE, posts=posts, categories=categories, query=None, cat_id=category.id, cat_name=category.name)
+
+@app.route('/post/<int:post_id>')
+@login_required
+def view_post(post_id):
+    post = db.session.get(Post, post_id, options=[joinedload(Post.votes), joinedload(Post.comments)])
+    if not post:
+        flash('Post not found!')
+        return redirect(url_for('index'))
+    
+    # Mark any related notifications as read for current user
+    related_notifs = db.session.query(Notification).filter_by(post_id=post.id, user_id=current_user.id).filter_by(is_read=False).all()
+    for notif in related_notifs:
+        notif.is_read = True
+    db.session.commit()
+    
+    categories = Category.query.all()
+    return render_template_string(SINGLE_POST_TEMPLATE, post=post, categories=categories)
 
 @app.route('/profile/<username>')
 def profile(username):
