@@ -80,6 +80,12 @@ def main_routes(app):
     @app.route('/notifications')
     @login_required
     def notifications():
+        from mail_utils import send_notification_digest  # Modular import
+        
+        # Fixed: Send digest FIRST (while still unread)
+        send_notification_digest(app)
+        
+        # Then mark all as read for UI
         notifs = Notification.query.filter_by(user_id=current_user.id).order_by(Notification.timestamp.desc()).all()
         for n in notifs:
             n.is_read = True
