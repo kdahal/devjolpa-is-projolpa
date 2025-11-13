@@ -3,19 +3,15 @@ from models import db, User, Category
 from werkzeug.security import generate_password_hash
 
 def test_login_successful(client, app):
-    # Register a test user first
-    with app.app_context():
-        test_user = User(username='testlogin', email='test@example.com', password_hash=generate_password_hash('testpass'))
-        db.session.add(test_user)
-        db.session.commit()
-
-    # Test login
-    response = client.post('/login', data={
-        'username': 'testlogin',
-        'password': 'testpass'
+    # Test registration + auto-login (no pre-create user)
+    response = client.post('/register', data={
+        'username': 'newreg',
+        'email': 'new@example.com',
+        'password': 'newpass'
     }, follow_redirects=True)
     assert response.status_code == 200
-    assert b'Logged in as testlogin' in response.data  # Check for user info in template
+    assert b'Logged in as newreg' in response.data  # Auto-logged in, on feed
+    assert b'Welcome aboard' in response.data  # From flash message
 
 def test_index_requires_login(client):
     response = client.get('/')
