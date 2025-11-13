@@ -34,17 +34,13 @@ def send_notification_digest(app):
         return
 
     with app.app_context():
-        print(f"Debug: MAIL_USERNAME = {app.config.get('MAIL_USERNAME')}")  # Keep for now
-        
-        if 'mail' not in current_app.extensions:
-            current_app.logger.warning("Flask-Mail not initialized—skipping email")
-            return
-        
-        sender = app.config['MAIL_USERNAME']
+        # Fixed: Safe get with default
+        sender = app.config.get('MAIL_USERNAME')
         
         if not sender:
             current_app.logger.error("No MAIL_USERNAME configured—skipping email")
             return
+        
         
         msg = Message(
             subject=f"You have {len(unread_notifs)} new notifications on Q&A App",
