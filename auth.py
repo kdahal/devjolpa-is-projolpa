@@ -58,8 +58,9 @@ def register_routes(app):
             user = User(username=username, email=email, password_hash=generate_password_hash(password))
             db.session.add(user)
             db.session.commit()
-            flash('Registered! Please login.')
-            return redirect(url_for('login'))
+            flash('Registration successful! Welcome aboard.')  # Updated flash for better UX
+            login_user(user)  # Fixed: Auto-login after registration
+            return redirect(url_for('index'))  # Redirect to feed, not login
         return render_template_string(REGISTER_TEMPLATE)
 
     @app.route('/logout')
