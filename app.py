@@ -13,9 +13,8 @@ from flask_mail import Mail
 import os
 
 # # Debug print after load (remove after)
-# print("Loaded MAIL_USERNAME:", os.environ.get('MAIL_USERNAME'))
-# print("Loaded MAIL_PASSWORD len:", len(os.environ.get('MAIL_PASSWORD', '')))
-print("Render Debug: MAIL_USERNAME from config =", app.config.get('MAIL_USERNAME'))
+print("Loaded MAIL_USERNAME:", os.environ.get('MAIL_USERNAME'))
+print("Loaded MAIL_PASSWORD len:", len(os.environ.get('MAIL_PASSWORD', '')))
 
 def create_app():
     app = Flask(__name__)
