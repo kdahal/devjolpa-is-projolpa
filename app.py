@@ -1,16 +1,24 @@
+from dotenv import load_dotenv  # Load first
+load_dotenv()  # Fixed: Before any other imports
+
 from flask import Flask
 from flask_login import LoginManager
-from config import Config
+from config import Config  # Now sees loaded env
 from models import db
 from auth import register_routes
 from routes import main_routes
 from admin import admin_routes
 from werkzeug.security import generate_password_hash
+from flask_mail import Mail
 import os
+
+# # Debug print after load (remove after)
+# print("Loaded MAIL_USERNAME:", os.environ.get('MAIL_USERNAME'))
+# print("Loaded MAIL_PASSWORD len:", len(os.environ.get('MAIL_PASSWORD', '')))
 
 def create_app():
     app = Flask(__name__)
-    app.config.from_object(Config)
+    app.config.from_object(Config)  # Now gets fresh env values
 
     db.init_app(app)
 
@@ -24,6 +32,9 @@ def create_app():
     def load_user(user_id):
         return db.session.get(User, int(user_id))
 
+    # Direct Flask-Mail init
+    app.mail = Mail(app)
+
     # Register routes
     register_routes(app)
     main_routes(app)
@@ -33,6 +44,8 @@ def create_app():
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
     return app
+
+# ... (seed_db unchanged)
 
 # Seeding (only runs in prod/main context)
 def seed_db(app):
@@ -108,8 +121,8 @@ def seed_db(app):
             post3 = db.session.get(Post, 3)
             comment1 = db.session.get(Comment, 1)
             comment3 = db.session.get(Comment, 3)
-            db.session.add(Notification(user_id=post1.user_id, post_id=post1.id, comment_id=comment1.id, message=f"New comment by {demo_user.username} on your post '{post1.title}'"))
-            db.session.add(Notification(user_id=post3.user_id, post_id=post3.id, comment_id=comment3.id, message=f"New comment by {demo_user.username} on your post '{post3.title}'"))
+            db.session.add(Notification(user_id=post1.user_id, post_id=post1.id, comment_id=comment1.id, message=f"New comment by {demo_user.username} on your post '{post1.title}'", is_read=False))  # Fixed: Explicit False
+            db.session.add(Notification(user_id=post3.user_id, post_id=post3.id, comment_id=comment3.id, message=f"New comment by {demo_user.username} on your post '{post3.title}'", is_read=False))  # Fixed
             db.session.commit()
         
         # Seed sample flag
