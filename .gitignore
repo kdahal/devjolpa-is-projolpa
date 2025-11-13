@@ -39,6 +39,14 @@ venv.bak/
 # Uploads
 uploads/
 
+# Testing/Coverage
+htmlcov/
+.pytest_cache/
+.coverage
+coverage.xml
+*.cover
+*.log  # App logs
+
 # IDE
 .vscode/
 .idea/
@@ -48,3 +56,6 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# init file
+init-repo.sh
